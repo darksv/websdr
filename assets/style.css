@@ -1,0 +1,19 @@
+body {
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+}
+
+#spectrogram {
+    width: 100vw;
+}
+
+#spectrogram > canvas {
+    padding: 0;
+    margin: 0;
+    width: 100vw;
+    height: 50px;
+    display: block;
+    position: absolute;
+    overflow: hidden;
+}

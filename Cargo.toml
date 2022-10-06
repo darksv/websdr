@@ -1,0 +1,17 @@
+[package]
+name = "websdr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.6.0-rc.2", features = ["ws", "headers"] }
+headers = "0.3.8"
+tokio = { version = "1.21.2", features = ["full"] }
+tower = "0.4.13"
+tower-http = { version = "0.3.4", features = ["full"] }
+tracing = "0.1.36"
+tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
+rustfft = "6.0.1"
+rtlsdr-rs = { git = "https://github.com/ccostes/rtl-sdr-rs.git" }
+async-channel = "1.7.1"
+futures-util = "0.3.24"
