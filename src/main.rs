@@ -24,6 +24,7 @@ use rtlsdr_rs::{DEFAULT_BUF_LENGTH, RtlSdr};
 use rustfft::num_complex::{Complex, Complex32};
 use rustfft::num_traits::Zero;
 use serde::Serialize;
+use tokio::select;
 use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
@@ -34,7 +35,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 struct ControllerState {
     cmd_tx: Sender<SdrCommand>,
     next_id: AtomicUsize,
-    buffers: Mutex<HashMap<usize, VecDeque<bytes::Bytes>>>,
+    buffers: Mutex<HashMap<usize, Sender<bytes::Bytes>>>,
 }
 
 struct BufferHandle<'cs> {
@@ -50,25 +51,21 @@ impl Drop for BufferHandle<'_> {
 }
 
 impl ControllerState {
-    fn alloc_buffer(&self) -> BufferHandle<'_> {
+    fn alloc_buffer(&self) -> (BufferHandle<'_>, Receiver<bytes::Bytes>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.buffers.lock().unwrap().insert(id, VecDeque::with_capacity(100));
-        BufferHandle {
+        let (tx, rx) = async_channel::bounded(100);
+        self.buffers.lock().unwrap().insert(id, tx);
+        (BufferHandle {
             controller: self,
             id
-        }
+        }, rx)
     }
 
     fn push_frame(&self, data: bytes::Bytes) {
         let mut lock = self.buffers.lock().unwrap();
         for value in lock.values_mut() {
-            value.push_back(data.clone());
+            value.send_blocking(data.clone()).unwrap();
         }
-    }
-
-    fn pop_frame(&self, handle: &BufferHandle<'_>) -> Option<bytes::Bytes> {
-        let mut lock = self.buffers.lock().unwrap();
-        lock.get_mut(&handle.id)?.pop_front()
     }
 
     fn free_buffer(&self, buf_id: usize) {
@@ -146,9 +143,8 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| async move {
         let (sink, stream) = socket.split();
         let (stats_tx, stats_rx) = async_channel::bounded(1);
-        let buffer = state.alloc_buffer();
-        tokio::join!(handle_commands(stream, stats_tx, state.clone()), handle_data(sink, stats_rx, state.clone(), &buffer));
-        drop(buffer);
+        let (_handle, rx) = state.alloc_buffer();
+        tokio::join!(handle_commands(stream, stats_tx, state.clone()), handle_data(sink, stats_rx, rx));
         info!("Close");
     })
 }
@@ -160,20 +156,23 @@ enum Stats {
     Frequency(u32),
 }
 
-async fn handle_data(mut socket: SplitSink<WebSocket, Message>, stats_rx: Receiver<Stats>, state: Arc<ControllerState>, buf_handle: &BufferHandle<'_>) {
+async fn handle_data(mut socket: SplitSink<WebSocket, Message>, mut stats_rx: Receiver<Stats>, mut data_rx: Receiver<bytes::Bytes>) {
     loop {
-        if let Some(fft) = state.pop_frame(&buf_handle) {
-            if let Err(e) = socket.send(Message::Binary(fft.to_vec())).await {
-                info!("client disconnected {:?}", e);
-                return;
-            }
-        }
-
-        if let Ok(stats) = stats_rx.try_recv() {
-            if let Err(e) = socket.send(dbg!(Message::Text(serde_json::to_string(&stats).unwrap()))).await {
-                info!("client disconnected {:?}", e);
-                return;
-            }
+        select! {
+            item = data_rx.next() => {
+                let fft = item.unwrap();
+                if let Err(e) = socket.send(Message::Binary(fft.to_vec())).await {
+                    info!("client disconnected {:?}", e);
+                    return;
+                }
+            },
+            item = stats_rx.next() => {
+                let stats = item.unwrap();
+                if let Err(e) = socket.send(dbg!(Message::Text(serde_json::to_string(&stats).unwrap()))).await {
+                    info!("client disconnected {:?}", e);
+                    return;
+                }
+            },
         }
     }
 }
