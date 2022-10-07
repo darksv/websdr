@@ -115,36 +115,12 @@ enum Stats {
 }
 
 async fn handle_data(mut socket: SplitSink<WebSocket, Message>, stats_rx: Receiver<Stats>, state: Arc<ControllerState>) {
-    const FFT_LEN: usize = 4096 * 2;
-
-    let fft = rustfft::FftPlanner::new().plan_fft_forward(FFT_LEN);
-    let mut scratch: Vec<Complex32> = vec![Complex32::zero(); fft.get_inplace_scratch_len()];
-    let mut incoming_samples: Vec<Complex32> = Vec::new();
-    let mut buffer: Vec<Complex32> = vec![Complex32::zero(); fft.len()];
-
-    let window = make_hamming_window(FFT_LEN, 1.0);
     loop {
-        while incoming_samples.len() >= FFT_LEN {
-            buffer.clear();
-            buffer.extend(incoming_samples[..FFT_LEN].iter().copied().zip(window.iter().copied()).map(|(a, b)| a * b));
-            fft.process_with_scratch(&mut buffer[..FFT_LEN], &mut scratch);
-            let frame: Vec<_> = buffer[..FFT_LEN / 2].iter().copied().map(|it| ((it.norm() as f32) * 4.0) as u8).collect();
-
-            if let Err(e) = socket.send(Message::Binary(frame)).await {
+        if let Ok(fft) = state.data_rx.recv().await {
+            if let Err(e) = socket.send(Message::Binary(fft.into_vec())).await {
                 info!("client disconnected {:?}", e);
                 return;
             }
-
-            incoming_samples.drain(..FFT_LEN);
-        }
-
-        if let Ok(samples) = state.data_rx.recv().await {
-            incoming_samples.extend(samples.array_chunks::<2>()
-                .map(|&[re, im]| Complex32::new(
-                    (re as i32 - 127) as f32 / 128.0,
-                    (im as i32 - 127) as f32 / 128.0,
-                ))
-            );
         }
 
         if let Ok(stats) = stats_rx.try_recv() {
@@ -181,6 +157,8 @@ enum SdrCommand {
     ChangeFrequency(u32),
 }
 
+const FFT_LEN: usize = 4096 * 2;
+
 fn sdr_worker(tx: Sender<Box<[u8]>>, rx: Receiver<SdrCommand>, terminated: &AtomicBool) -> rtlsdr_rs::error::Result<()> {
     let mut sdr = RtlSdr::open(0).expect("Failed to open device");
     sdr.set_tuner_gain(rtlsdr_rs::TunerGain::Auto)?;
@@ -195,13 +173,29 @@ fn sdr_worker(tx: Sender<Box<[u8]>>, rx: Receiver<SdrCommand>, terminated: &Atom
 
     info!("Reading samples in sync mode...");
 
+    let fft = rustfft::FftPlanner::new().plan_fft_forward(FFT_LEN);
+    let mut scratch: Vec<Complex32> = vec![Complex32::zero(); fft.get_inplace_scratch_len()];
+    let mut incoming_samples: Vec<Complex32> = Vec::new();
+    let mut buffer: Vec<Complex32> = vec![Complex32::zero(); fft.len()];
+
+    let window = make_hamming_window(FFT_LEN, 1.0);
+
     loop {
         if terminated.load(Ordering::Relaxed) {
             break;
         }
 
-        if let Ok(x) = rx.try_recv() {
-            match x {
+        while incoming_samples.len() >= FFT_LEN {
+            buffer.clear();
+            buffer.extend(incoming_samples[..FFT_LEN].iter().copied().zip(window.iter().copied()).map(|(a, b)| a * b));
+            fft.process_with_scratch(&mut buffer[..FFT_LEN], &mut scratch);
+            let frame: Vec<_> = buffer[..FFT_LEN / 2].iter().copied().map(|it| ((it.norm() as f32) * 4.0) as u8).collect();
+            tx.send_blocking(frame.into_boxed_slice()).unwrap();
+            incoming_samples.drain(..FFT_LEN);
+        }
+
+        if let Ok(command) = rx.try_recv() {
+            match command {
                 SdrCommand::ChangeFrequency(f) => {
                     if let Err(e) = sdr.reset_buffer() {
                         warn!("reset_buffer: {:?}", e);
@@ -215,7 +209,14 @@ fn sdr_worker(tx: Sender<Box<[u8]>>, rx: Receiver<SdrCommand>, terminated: &Atom
 
         let mut frame = [0u8; DEFAULT_BUF_LENGTH];
         let n = sdr.read_sync(&mut frame).unwrap();
-        tx.send_blocking(frame[..n].to_vec().into_boxed_slice()).unwrap();
+        assert_eq!(n, DEFAULT_BUF_LENGTH);
+        let samples = &frame[..n];
+        incoming_samples.extend(samples.array_chunks::<2>()
+            .map(|&[re, im]| Complex32::new(
+                (re as i32 - 127) as f32 / 128.0,
+                (im as i32 - 127) as f32 / 128.0,
+            ))
+        );
     }
     sdr.close()?;
     Ok(())
