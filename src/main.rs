@@ -1,9 +1,9 @@
 #![feature(array_chunks)]
 
 use std::{net::SocketAddr, path::PathBuf};
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
@@ -32,8 +32,49 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 struct ControllerState {
-    data_rx: Receiver<Box<[u8]>>,
     cmd_tx: Sender<SdrCommand>,
+    next_id: AtomicUsize,
+    buffers: Mutex<HashMap<usize, VecDeque<bytes::Bytes>>>,
+}
+
+struct BufferHandle<'cs> {
+    controller: &'cs ControllerState,
+    id: usize,
+}
+
+impl Drop for BufferHandle<'_> {
+    fn drop(&mut self) {
+        info!("dropping buf handle");
+        self.controller.free_buffer(self.id);
+    }
+}
+
+impl ControllerState {
+    fn alloc_buffer(&self) -> BufferHandle<'_> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.buffers.lock().unwrap().insert(id, VecDeque::with_capacity(100));
+        BufferHandle {
+            controller: self,
+            id
+        }
+    }
+
+    fn push_frame(&self, data: bytes::Bytes) {
+        let mut lock = self.buffers.lock().unwrap();
+        for value in lock.values_mut() {
+            value.push_back(data.clone());
+        }
+    }
+
+    fn pop_frame(&self, handle: &BufferHandle<'_>) -> Option<bytes::Bytes> {
+        let mut lock = self.buffers.lock().unwrap();
+        lock.get_mut(&handle.id)?.pop_front()
+    }
+
+    fn free_buffer(&self, buf_id: usize) {
+        let mut lock = self.buffers.lock().unwrap();
+        lock.remove(&buf_id);
+    }
 }
 
 #[tokio::main]
@@ -48,16 +89,19 @@ async fn main() {
 
     let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
 
-    let (tx, rx) = async_channel::bounded(10);
     let (cmd_tx, cmd_rx) = async_channel::bounded(1);
-    tokio::task::spawn_blocking(move || {
-        let term = AtomicBool::new(false);
-        sdr_worker(tx, cmd_rx, &term).unwrap();
+    let state = Arc::new(ControllerState {
+        cmd_tx,
+        next_id: Default::default(),
+        buffers: Mutex::new(Default::default())
     });
 
-    let state = Arc::new(ControllerState {
-        data_rx: rx,
-        cmd_tx,
+    tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || {
+            let term = AtomicBool::new(false);
+            sdr_worker(state, cmd_rx, &term).unwrap();
+        }
     });
 
     // build our application with some routes
@@ -83,7 +127,7 @@ async fn main() {
 
     // run it with hyper
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    tracing::debug!("listening on {}", addr);
+    debug!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
@@ -99,10 +143,12 @@ async fn ws_handler(
         info!("`{}` connected", user_agent.as_str());
     }
 
-    ws.on_upgrade(move |socket| async {
+    ws.on_upgrade(move |socket| async move {
         let (sink, stream) = socket.split();
         let (stats_tx, stats_rx) = async_channel::bounded(1);
-        tokio::join!(handle_commands(stream, stats_tx, state.clone()), handle_data(sink, stats_rx, state));
+        let buffer = state.alloc_buffer();
+        tokio::join!(handle_commands(stream, stats_tx, state.clone()), handle_data(sink, stats_rx, state.clone(), &buffer));
+        drop(buffer);
         info!("Close");
     })
 }
@@ -114,10 +160,10 @@ enum Stats {
     Frequency(u32),
 }
 
-async fn handle_data(mut socket: SplitSink<WebSocket, Message>, stats_rx: Receiver<Stats>, state: Arc<ControllerState>) {
+async fn handle_data(mut socket: SplitSink<WebSocket, Message>, stats_rx: Receiver<Stats>, state: Arc<ControllerState>, buf_handle: &BufferHandle<'_>) {
     loop {
-        if let Ok(fft) = state.data_rx.recv().await {
-            if let Err(e) = socket.send(Message::Binary(fft.into_vec())).await {
+        if let Some(fft) = state.pop_frame(&buf_handle) {
+            if let Err(e) = socket.send(Message::Binary(fft.to_vec())).await {
                 info!("client disconnected {:?}", e);
                 return;
             }
@@ -159,7 +205,7 @@ enum SdrCommand {
 
 const FFT_LEN: usize = 4096 * 2;
 
-fn sdr_worker(tx: Sender<Box<[u8]>>, rx: Receiver<SdrCommand>, terminated: &AtomicBool) -> rtlsdr_rs::error::Result<()> {
+fn sdr_worker(tx: Arc<ControllerState>, rx: Receiver<SdrCommand>, terminated: &AtomicBool) -> rtlsdr_rs::error::Result<()> {
     let mut sdr = RtlSdr::open(0).expect("Failed to open device");
     sdr.set_tuner_gain(rtlsdr_rs::TunerGain::Auto)?;
     sdr.set_bias_tee(false)?;
@@ -190,7 +236,7 @@ fn sdr_worker(tx: Sender<Box<[u8]>>, rx: Receiver<SdrCommand>, terminated: &Atom
             buffer.extend(incoming_samples[..FFT_LEN].iter().copied().zip(window.iter().copied()).map(|(a, b)| a * b));
             fft.process_with_scratch(&mut buffer[..FFT_LEN], &mut scratch);
             let frame: Vec<_> = buffer[..FFT_LEN / 2].iter().copied().map(|it| ((it.norm() as f32) * 4.0) as u8).collect();
-            tx.send_blocking(frame.into_boxed_slice()).unwrap();
+            tx.push_frame(bytes::Bytes::from(frame));
             incoming_samples.drain(..FFT_LEN);
         }
 
