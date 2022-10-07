@@ -55,7 +55,7 @@ socket.addEventListener('message', function (event) {
 let f = 93000000;
 
 document.addEventListener('wheel', (e) => {
-    f += Math.sign(e.deltaY) * 100000;
+    f += Math.sign(e.deltaY) * 20000;
     console.log(f);
     socket.send(JSON.stringify(f));
 });
