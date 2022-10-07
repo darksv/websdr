@@ -15,3 +15,5 @@ rustfft = "6.0.1"
 rtlsdr-rs = { git = "https://github.com/ccostes/rtl-sdr-rs.git" }
 async-channel = "1.7.1"
 futures-util = "0.3.24"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"

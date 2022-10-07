@@ -18,11 +18,12 @@ use axum::{
     routing::{get, get_service},
 };
 use axum::extract::State;
-use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use futures_util::stream::{SplitSink, SplitStream};
 use rtlsdr_rs::{DEFAULT_BUF_LENGTH, RtlSdr};
 use rustfft::num_complex::{Complex, Complex32};
 use rustfft::num_traits::Zero;
+use serde::Serialize;
 use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
@@ -40,7 +41,7 @@ async fn main() {
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "example_websockets=debug,tower_http=debug,websdr=debug".into()),
+                .unwrap_or_else(|_| "tower_http=debug,websdr=debug".into()),
         ))
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -100,12 +101,20 @@ async fn ws_handler(
 
     ws.on_upgrade(move |socket| async {
         let (sink, stream) = socket.split();
-        tokio::join!(handle_commands(stream, state.clone()), handle_data(sink, state));
+        let (stats_tx, stats_rx) = async_channel::bounded(1);
+        tokio::join!(handle_commands(stream, stats_tx, state.clone()), handle_data(sink, stats_rx, state));
         info!("Close");
     })
 }
 
-async fn handle_data(mut socket: SplitSink<WebSocket, Message>, state: Arc<ControllerState>) {
+#[derive(Serialize)]
+#[serde(untagged)]
+#[serde(rename_all="snake_case")]
+enum Stats {
+    Frequency(u32),
+}
+
+async fn handle_data(mut socket: SplitSink<WebSocket, Message>, stats_rx: Receiver<Stats>, state: Arc<ControllerState>) {
     const FFT_LEN: usize = 4096 * 2;
 
     let fft = rustfft::FftPlanner::new().plan_fft_forward(FFT_LEN);
@@ -137,15 +146,24 @@ async fn handle_data(mut socket: SplitSink<WebSocket, Message>, state: Arc<Contr
                 ))
             );
         }
+
+        if let Ok(stats) = stats_rx.try_recv() {
+            if let Err(e) = socket.send(dbg!(Message::Text(serde_json::to_string(&stats).unwrap()))).await {
+                info!("client disconnected {:?}", e);
+                return;
+            }
+        }
     }
 }
 
-async fn handle_commands(mut stream: SplitStream<WebSocket>, state: Arc<ControllerState>) {
+async fn handle_commands(mut stream: SplitStream<WebSocket>, stats_tx: Sender<Stats>, state: Arc<ControllerState>) {
     while let Some(msg) = stream.next().await {
         match msg {
             Ok(msg) => match msg {
                 Message::Text(payload) => {
-                    state.cmd_tx.send(SdrCommand::ChangeFrequency(payload.parse().unwrap())).await.unwrap();
+                    let f = payload.parse().unwrap();
+                    state.cmd_tx.send(SdrCommand::ChangeFrequency(f)).await.unwrap();
+                    stats_tx.send(Stats::Frequency(f)).await.unwrap();
                 }
                 other => {
                     debug!("message: {:?}", &other);

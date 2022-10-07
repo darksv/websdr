@@ -17,3 +17,16 @@ body {
     position: absolute;
     overflow: hidden;
 }
+
+#info {
+    position: absolute;
+    bottom: 0;
+    height: 30px;
+    font-size: 32px;
+    color: #ffffff;
+    text-align: center;
+    display: block;
+    width: 100vw;
+    padding: 1em;
+    font-family: monospace;
+}
