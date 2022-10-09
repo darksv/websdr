@@ -100,7 +100,13 @@ async fn main() {
         let state = state.clone();
         move || {
             let term = AtomicBool::new(false);
-            sdr_worker(state, cmd_rx, &term).unwrap();
+            loop {
+                info!("Starting SDR worker thread...");
+                if let Err(e) = sdr_worker(&state, &cmd_rx, &term) {
+                    warn!("SDR worker thread error: {:?}", e);
+                }
+                std::thread::sleep(Duration::from_secs(10));
+            }
         }
     });
 
@@ -264,8 +270,8 @@ enum SdrCommand {
 
 const FFT_LEN: usize = 4096;
 
-fn sdr_worker(tx: Arc<ControllerState>, rx: Receiver<SdrCommand>, terminated: &AtomicBool) -> rtlsdr_rs::error::Result<()> {
-    let mut sdr = RtlSdr::open(0).expect("Failed to open device");
+fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &AtomicBool) -> rtlsdr_rs::error::Result<()> {
+    let mut sdr = RtlSdr::open(0)?;
     sdr.set_tuner_gain(rtlsdr_rs::TunerGain::Auto)?;
     sdr.set_bias_tee(false)?;
     sdr.reset_buffer()?;
@@ -297,7 +303,7 @@ fn sdr_worker(tx: Arc<ControllerState>, rx: Receiver<SdrCommand>, terminated: &A
             buffer.extend(incoming_samples[..FFT_LEN].iter().copied().zip(window.iter().copied()).map(|(a, b)| a * b));
             fft.process_with_scratch(&mut buffer[..FFT_LEN], &mut scratch);
             let frame: Vec<_> = buffer[..FFT_LEN].iter().copied().map(|it| ((it.norm() as f32) * 4.0) as u8).collect();
-            tx.send_to_all(Data::Fft(bytes::Bytes::from(frame)));
+            state.send_to_all(Data::Fft(bytes::Bytes::from(frame)));
             incoming_samples.drain(..FFT_LEN);
 
             let audio = {
@@ -314,7 +320,7 @@ fn sdr_worker(tx: Arc<ControllerState>, rx: Receiver<SdrCommand>, terminated: &A
 
                 bytes::Bytes::from_iter(samples.into_iter().map(|it| ((it * i16::MAX as f32) as i16).to_le_bytes()).flatten())
             };
-            tx.send_to_all(Data::Audio(audio));
+            state.send_to_all(Data::Audio(audio));
         }
 
 
@@ -333,7 +339,7 @@ fn sdr_worker(tx: Arc<ControllerState>, rx: Receiver<SdrCommand>, terminated: &A
         }
 
         let mut frame = [0u8; DEFAULT_BUF_LENGTH];
-        let n = sdr.read_sync(&mut frame).unwrap();
+        let n = sdr.read_sync(&mut frame)?;
         assert_eq!(n, DEFAULT_BUF_LENGTH);
         let samples = &frame[..n];
         incoming_samples.extend(samples.array_chunks::<2>()
