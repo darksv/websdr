@@ -1,10 +1,19 @@
 #![feature(array_chunks)]
+#![feature(file_create_new)]
+#![feature(iter_array_chunks)]
+#![feature(array_windows)]
+#![feature(iter_collect_into)]
+#![feature(iter_advance_by)]
+
+mod iter;
 
 use std::{net::SocketAddr, path::PathBuf};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
+
+use crate::iter::IterExt;
 
 use async_channel::{Receiver, Sender};
 use axum::{
@@ -291,8 +300,8 @@ fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &A
 
     let window = make_hamming_window(FFT_LEN, 1.0);
 
-    let mut t = 0;
-    let mut f = 2137.0;
+    let mut audio_samples = Vec::new();
+
     loop {
         if terminated.load(Ordering::Relaxed) {
             break;
@@ -304,22 +313,31 @@ fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &A
             fft.process_with_scratch(&mut buffer[..FFT_LEN], &mut scratch);
             let frame: Vec<_> = buffer[..FFT_LEN].iter().copied().map(|it| ((it.norm() as f32) * 4.0) as u8).collect();
             state.send_to_all(Data::Fft(bytes::Bytes::from(frame)));
-            incoming_samples.drain(..FFT_LEN);
+            let samples = incoming_samples.drain(..FFT_LEN);
 
-            let audio = {
-                let fs = 22050;
-                let n = fs / 10 / 5;
-                let dt = 1.0 / fs as f32;
+            {
+                let Fs = 1_200_000;
+                let Fbw = 200_000;
+                let dec = Fs / Fbw;
 
-                let mut samples = Vec::with_capacity(n);
-                for _ in 0..n {
-                    let sample = f32::sin(2.0 * 3.14 * f * t as f32 * dt);
-                    samples.push(sample);
-                    t += 1;
-                }
-
-                bytes::Bytes::from_iter(samples.into_iter().map(|it| ((it * i16::MAX as f32) as i16).to_le_bytes()).flatten())
+                samples
+                    .into_iter()
+                    .every_nth(dec)
+                    .array_windows()
+                    .map(|[s0, s1]| (s1 * s0.conj()).arg())
+                    .every_nth(9)
+                    .collect_into(&mut audio_samples);
             };
+        }
+
+        let fs = 22050;
+        let n = fs / 10 / 5;
+
+        while audio_samples.len() >= n {
+            let audio = bytes::Bytes::from_iter(audio_samples.drain(..n)
+                .map(|it| ((it * i16::MAX as f32) as i16).to_le_bytes())
+                .flatten()
+            );
             state.send_to_all(Data::Audio(audio));
         }
 
