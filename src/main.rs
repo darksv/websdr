@@ -54,7 +54,7 @@ struct BufferHandle<'cs> {
 
 impl Drop for BufferHandle<'_> {
     fn drop(&mut self) {
-        info!("dropping buf handle");
+        info!("dropping buf handle for {}", self.id);
         self.controller.free_buffer(self.id);
     }
 }
@@ -71,10 +71,10 @@ impl ControllerState {
     }
 
     fn send_to_all(&self, data: Data) {
-        let mut lock = self.buffers.lock().unwrap();
-        for value in lock.values_mut() {
-            if let Err(e) = value.send_blocking(data.clone()) {
-                warn!("Error while sending to all:  {:?}", e);
+        let lock = self.buffers.lock().unwrap();
+        for (id, tx) in lock.iter() {
+            if let Err(_) = tx.send_blocking(data.clone()) {
+                warn!("error while sending to {id}");
             }
         }
     }
@@ -197,7 +197,10 @@ async fn handle_data(
                 let mut data: Vec<u8> = Vec::with_capacity(1 + audio.len());
                 data.push(0x02);
                 data.extend_from_slice(audio.as_ref());
-                tx.send(data).await.unwrap();
+                if tx.send(data).await.is_err() {
+                    warn!("Cannot send audio frame to websocket task");
+                    break;
+                }
                 interval.tick().await;
             }
         }
@@ -208,7 +211,9 @@ async fn handle_data(
             let mut data: Vec<u8> = Vec::with_capacity(1 + fft.len());
             data.push(0x01);
             data.extend_from_slice(fft.as_ref());
-            frames_tx.send(data).await.unwrap();
+            if frames_tx.send(data).await.is_err() {
+                warn!("Cannot send FFT data to websocket task");
+            }
         }
     };
 
@@ -221,7 +226,9 @@ async fn handle_data(
         select! {
             biased;
             item = stats_rx.next() => {
-                let stats = item.unwrap();
+                let Some(stats) = item else {
+                    break;
+                };
                 if let Err(e) = socket.send(dbg!(Message::Text(serde_json::to_string(&stats).unwrap()))).await {
                     info!("client disconnected {:?}", e);
                     return;
