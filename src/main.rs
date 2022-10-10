@@ -261,12 +261,19 @@ async fn handle_commands(mut stream: SplitStream<WebSocket>, stats_tx: Sender<St
         match msg {
             Ok(msg) => match msg {
                 Message::Text(payload) => {
-                    info!("on recv");
-                    let f = payload.parse().unwrap();
-                    state.cmd_tx.send(SdrCommand::ChangeFrequency(f)).await.unwrap();
-                    info!("on recv2");
-
-                    // stats_tx.send(Stats::Frequency(f)).await.unwrap();
+                    let command = match serde_json::from_str(&payload) {
+                        Ok(command) => command,
+                        Err(e) => {
+                            warn!("Invalid command: {:?}", e);
+                            continue;
+                        }
+                    };
+                    match &command {
+                        SdrCommand::ChangeFrequency { frequency } => {
+                            stats_tx.send(Stats::Frequency(*frequency)).await.unwrap();
+                        }
+                    }
+                    state.cmd_tx.send(command).await.unwrap();
                 }
                 other => {
                     debug!("message: {:?}", &other);
@@ -280,8 +287,11 @@ async fn handle_commands(mut stream: SplitStream<WebSocket>, stats_tx: Sender<St
     }
 }
 
+#[derive(Debug)]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case", tag = "command")]
 enum SdrCommand {
-    ChangeFrequency(u32),
+    ChangeFrequency { frequency: u32 },
 }
 
 const FFT_LEN: usize = 4096;
@@ -348,15 +358,14 @@ fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &A
             state.send_to_all(Data::Audio(audio));
         }
 
-
         if let Ok(command) = rx.try_recv() {
             match command {
-                SdrCommand::ChangeFrequency(f) => {
-                    info!("change: {:?}", f);
+                SdrCommand::ChangeFrequency { frequency } => {
+                    info!("change: {:?}", frequency);
                     if let Err(e) = sdr.reset_buffer() {
                         warn!("reset_buffer: {:?}", e);
                     }
-                    if let Err(e) = sdr.set_center_freq(f) {
+                    if let Err(e) = sdr.set_center_freq(frequency) {
                         warn!("set_center_freq: {:?}", e);
                     }
                 }

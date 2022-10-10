@@ -69,7 +69,7 @@ let f = 93000000;
 document.addEventListener('wheel', (e) => {
     f += Math.sign(e.deltaY) * 20000;
     console.log(f);
-    socket.send(JSON.stringify(f));
+    socket.send(JSON.stringify({command: "change_frequency", frequency: f}));
 });
 
 let audioWorkerPort = null;
