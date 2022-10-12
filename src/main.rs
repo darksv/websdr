@@ -359,17 +359,22 @@ fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &A
             state.send_to_all(Data::Audio(audio));
         }
 
+        let mut new_frequency = None;
         while let Ok(command)= rx.try_recv() {
             match command {
                 SdrCommand::ChangeFrequency { frequency } => {
-                    info!("change: {:?}", frequency);
-                    if let Err(e) = sdr.reset_buffer() {
-                        warn!("reset_buffer: {:?}", e);
-                    }
-                    if let Err(e) = sdr.set_center_freq(frequency) {
-                        warn!("set_center_freq: {:?}", e);
-                    }
+                    new_frequency = Some(frequency);
                 }
+            }
+        }
+
+        if let Some(frequency) = new_frequency {
+            info!("Changing central frequency to {}", frequency);
+            if let Err(e) = sdr.reset_buffer() {
+                warn!("reset_buffer: {:?}", e);
+            }
+            if let Err(e) = sdr.set_center_freq(frequency) {
+                warn!("set_center_freq: {:?}", e);
             }
         }
 
