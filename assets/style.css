@@ -25,8 +25,21 @@ body {
     font-size: 32px;
     color: #ffffff;
     text-align: center;
-    display: block;
+    display: table;
     width: 100vw;
     padding: 1em;
     font-family: monospace;
+    box-sizing: border-box;
+}
+
+#buffer-info, #frequency-info {
+    display: table-cell;
+}
+
+#buffer-info {
+    text-align: left;
+}
+
+#frequency-info {
+    text-align: right;
 }

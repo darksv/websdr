@@ -12,7 +12,8 @@ let canvasContainer = document.getElementById('spectrogram');
 socket.addEventListener('message', function (event) {
     if (!(event.data instanceof ArrayBuffer)) {
         const msg = JSON.parse(event.data);
-        document.getElementById('info').innerText = msg;
+        const freq = msg / 1_000_000;
+        document.getElementById('frequency-info').innerText = `Frequency: ${freq.toFixed(3)}MHz`;
         return;
     }
 
@@ -67,7 +68,7 @@ socket.addEventListener('message', function (event) {
 let f = 93000000;
 
 document.addEventListener('wheel', (e) => {
-    f += Math.sign(e.deltaY) * 20000;
+    f += Math.sign(e.deltaY) * 100000;
     console.log(f);
     socket.send(JSON.stringify({command: "change_frequency", frequency: f}));
 });
@@ -95,7 +96,7 @@ document.getElementById('info').addEventListener('click', ev => {
             const bufferSize = data.bufferSize;
             const bufferCapacity = data.bufferCapacity;
             const fullness = bufferSize / bufferCapacity * 100;
-            document.getElementById('info').innerText = `Buffer: ${bufferSize}/${bufferCapacity} (${~~fullness}%)`;
+            document.getElementById('buffer-info').innerText = `Buffer: ${bufferSize}/${bufferCapacity} (${~~fullness}%)`;
         };
 
         audioWorkerPort = sourceNode.port;
