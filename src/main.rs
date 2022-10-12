@@ -98,7 +98,7 @@ async fn main() {
 
     let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
 
-    let (cmd_tx, cmd_rx) = async_channel::bounded(1);
+    let (cmd_tx, cmd_rx) = async_channel::bounded(4);
     let state = Arc::new(ControllerState {
         cmd_tx,
         next_id: Default::default(),
@@ -358,7 +358,7 @@ fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &A
             state.send_to_all(Data::Audio(audio));
         }
 
-        if let Ok(command) = rx.try_recv() {
+        while let Ok(command)= rx.try_recv() {
             match command {
                 SdrCommand::ChangeFrequency { frequency } => {
                     info!("change: {:?}", frequency);
