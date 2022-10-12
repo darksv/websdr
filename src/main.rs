@@ -351,10 +351,11 @@ fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &A
         let n = fs / 10 / 5;
 
         while audio_samples.len() >= n {
-            let audio = bytes::Bytes::from_iter(audio_samples.drain(..n)
+            let audio = audio_samples
+                .drain(..n)
                 .map(|it| ((it * i16::MAX as f32) as i16).to_le_bytes())
                 .flatten()
-            );
+                .collect();
             state.send_to_all(Data::Audio(audio));
         }
 
