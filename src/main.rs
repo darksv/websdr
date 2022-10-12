@@ -229,7 +229,7 @@ async fn handle_data(
                 let Some(stats) = item else {
                     break;
                 };
-                if let Err(e) = socket.send(dbg!(Message::Text(serde_json::to_string(&stats).unwrap()))).await {
+                if let Err(e) = socket.send(Message::Text(serde_json::to_string(&stats).unwrap())).await {
                     info!("client disconnected {:?}", e);
                     return;
                 }
