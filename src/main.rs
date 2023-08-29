@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 #![feature(array_chunks)]
 #![feature(file_create_new)]
 #![feature(iter_array_chunks)]
@@ -5,21 +6,17 @@
 #![feature(iter_collect_into)]
 #![feature(iter_advance_by)]
 
-mod iter;
-
 use std::{net::SocketAddr, path::PathBuf};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use crate::iter::IterExt;
-
 use async_channel::{Receiver, Sender};
 use axum::{extract::{
     TypedHeader,
     ws::{Message, WebSocket, WebSocketUpgrade},
-}, http::StatusCode, response::IntoResponse, Router, routing::{get, get_service}, ServiceExt};
+}, http::StatusCode, response::IntoResponse, Router, routing::{get, get_service}};
 use axum::extract::State;
 use futures_util::{SinkExt, StreamExt};
 use futures_util::stream::{SplitSink, SplitStream};
@@ -34,6 +31,10 @@ use tower_http::{
 };
 use tracing::{debug, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+use crate::iter::IterExt;
+
+mod iter;
 
 struct ControllerState {
     cmd_tx: Sender<SdrCommand>,
@@ -330,14 +331,14 @@ fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &A
             {
                 let Fs = 1_200_000;
                 let Fbw = 200_000;
-                let dec = Fs / Fbw;
+                let Fa = 22050;
 
                 samples
                     .into_iter()
-                    .every_nth(dec)
+                    .step_by(Fs / Fbw)
                     .array_windows()
                     .map(|[s0, s1]| (s1 * s0.conj()).arg())
-                    .every_nth(9)
+                    .step_by(Fbw / Fa)
                     .collect_into(&mut audio_samples);
             };
         }
