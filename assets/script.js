@@ -9,16 +9,22 @@ const maxChunkSize = 50;
 let lastBlockHeight = 0;
 let canvasContainer = document.getElementById('spectrogram');
 
+const FRAME_FFT = 0x01;
+const FRAME_AUDIO = 0x02;
+
 socket.addEventListener('message', function (event) {
     if (!(event.data instanceof ArrayBuffer)) {
         const msg = JSON.parse(event.data);
-        const freq = msg / 1_000_000;
-        document.getElementById('frequency-info').innerText = `Frequency: ${freq.toFixed(3)}MHz`;
+        updateInfo({frequency: msg});
         return;
     }
 
     const data = new Uint8Array(event.data);
-    if (data[0] === 0x01) {
+    if (data.length < 1) {
+        return;
+    }
+
+    if (data[0] === FRAME_FFT) {
         if (canvasContainer.childNodes.length === 0 || lastBlockHeight >= maxChunkSize) {
             const canvas = document.createElement('canvas');
             canvas.width = 4096;
@@ -33,9 +39,9 @@ socket.addEventListener('message', function (event) {
         // Iterate through every pixel
         for (let i = 0; i < 4096; i++) {
             imageData.data[4 * i + 0] = data[1 + i];  // R value
-            imageData.data[4 * i + 1] = 0;    // G value
-            imageData.data[4 * i + 2] = 0;  // B value
-            imageData.data[4 * i + 3] = 255;  // A value
+            imageData.data[4 * i + 1] = 0;            // G value
+            imageData.data[4 * i + 2] = 0;            // B value
+            imageData.data[4 * i + 3] = 255;          // A value
         }
 
         ctx.putImageData(imageData, 0, maxChunkSize - lastBlockHeight);
@@ -49,7 +55,7 @@ socket.addEventListener('message', function (event) {
             }
             child.style.transform = 'translateY(' + (i * (maxChunkSize - 1) - (maxChunkSize - lastBlockHeight + 1)) + 'px)';
         }
-    } else if (data[0] === 0x02) {
+    } else if (data[0] === FRAME_AUDIO) {
         if (!audioWorkerPort) {
             return;
         }
@@ -61,22 +67,19 @@ socket.addEventListener('message', function (event) {
         for (let i = 0; i < numSamples; i++) {
             buffer[i] = (samples.getInt16(1 + i * 2, true) / 32767.0);
         }
-        audioWorkerPort.postMessage({samples: buffer})
+        audioWorkerPort.postMessage({samples: buffer});
     }
-});
-
-let f = 93000000;
-
-document.addEventListener('wheel', (e) => {
-    f += Math.sign(e.deltaY) * 100000;
-    console.log(f);
-    socket.send(JSON.stringify({command: "change_frequency", frequency: f}));
 });
 
 let audioWorkerPort = null;
 let audioInitialized = false;
+let audioGainNode = null;
+let config = {
+    volume: 0.2,
+    frequency: 100100000,
+}
 
-document.getElementById('info').addEventListener('click', ev => {
+const initAudio = () => {
     if (audioInitialized) {
         return;
     }
@@ -86,20 +89,49 @@ document.getElementById('info').addEventListener('click', ev => {
     const audioCtx = new window.AudioContext({
         sampleRate: 22050
     });
-    audioCtx.audioWorklet.addModule("worklet.js?").then(() => {
+
+    audioCtx.audioWorklet.addModule("worklet.js?x").then(() => {
+        const gainNode = audioCtx.createGain();
         const sourceNode = new AudioWorkletNode(
             audioCtx,
             'buffered-audio-chunk-processor'
         );
         sourceNode.port.onmessage = (e) => {
-            const data = e.data;
-            const bufferSize = data.bufferSize;
-            const bufferCapacity = data.bufferCapacity;
-            const fullness = bufferSize / bufferCapacity * 100;
-            document.getElementById('buffer-info').innerText = `Buffer: ${bufferSize}/${bufferCapacity} (${~~fullness}%)`;
+            updateInfo(e.data);
         };
 
         audioWorkerPort = sourceNode.port;
-        sourceNode.connect(audioCtx.destination);
+        audioGainNode = gainNode;
+        sourceNode.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
     });
+};
+const updateInfo = ({bufferSize, bufferCapacity, frequency, volume}) => {
+    if (bufferSize !== undefined && bufferCapacity !== undefined) {
+        const fullness = bufferSize / bufferCapacity * 100;
+        document.getElementById('buffer-info').innerText = `Buffer: ${bufferSize}/${bufferCapacity} (${~~fullness}%)`;
+    }
+
+    if (frequency !== undefined) {
+        const freq = frequency / 1_000_000;
+        document.getElementById('frequency-info').innerText = `Frequency: ${freq.toFixed(3)}MHz`;
+    }
+
+    if (volume !== undefined) {
+        document.getElementById('volume-control').value = volume * 100;
+    }
+}
+
+document.getElementById('frequency-info').addEventListener('wheel', (e) => {
+    config.frequency += Math.sign(e.deltaY) * 100000;
+    socket.send(JSON.stringify({command: "change_frequency", frequency: config.frequency}));
 });
+
+document.getElementById('volume-control').addEventListener('change', e => {
+    initAudio();
+
+    config.volume = e.target.value / 100;
+    audioGainNode.gain.setValueAtTime(config.volume, 0);
+});
+
+updateInfo({frequency: config.frequency, bufferCapacity: 0, bufferSize: 0, volume: config.volume});

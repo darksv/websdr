@@ -32,8 +32,9 @@ body {
     box-sizing: border-box;
 }
 
-#buffer-info, #frequency-info {
+#buffer-info, #frequency-info, #control {
     display: table-cell;
+    width: 33%;
 }
 
 #buffer-info {
@@ -42,4 +43,5 @@ body {
 
 #frequency-info {
     text-align: right;
+    cursor: ns-resize;
 }
