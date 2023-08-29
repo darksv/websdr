@@ -16,16 +16,10 @@ use std::time::Duration;
 use crate::iter::IterExt;
 
 use async_channel::{Receiver, Sender};
-use axum::{
-    extract::{
-        TypedHeader,
-        ws::{Message, WebSocket, WebSocketUpgrade},
-    },
-    http::StatusCode,
-    response::IntoResponse,
-    Router,
-    routing::{get, get_service},
-};
+use axum::{extract::{
+    TypedHeader,
+    ws::{Message, WebSocket, WebSocketUpgrade},
+}, http::StatusCode, response::IntoResponse, Router, routing::{get, get_service}, ServiceExt};
 use axum::extract::State;
 use futures_util::{SinkExt, StreamExt};
 use futures_util::stream::{SplitSink, SplitStream};
@@ -120,7 +114,7 @@ async fn main() {
     });
 
     // build our application with some routes
-    let app = Router::with_state(state)
+    let app = Router::new()
         .fallback_service(
             get_service(ServeDir::new(assets_dir).append_index_html_on_directories(true))
                 .handle_error(|error: std::io::Error| async move {
@@ -137,7 +131,8 @@ async fn main() {
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::default().include_headers(true)),
-        );
+        )
+        .with_state(state);
 
 
     // run it with hyper
