@@ -1,8 +1,15 @@
 const url = (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.hostname + ':' + location.port + '/ws';
 const socket = new WebSocket(url);
 socket.binaryType = 'arraybuffer';
+
+let isOpen = false;
+
 socket.addEventListener('open', function (event) {
-    // socket.send('Hello Server!');
+    isOpen = true;
+    socket.send(JSON.stringify({
+        command: "change_frequency",
+        frequency: config.frequency
+    }));
 });
 
 const maxChunkSize = 50;
@@ -33,6 +40,7 @@ socket.addEventListener('message', function (event) {
             lastBlockHeight = 0;
         }
 
+        console.log(data.length);
         const canvas = canvasContainer.childNodes[0];
         const ctx = canvas.getContext('2d');
         const imageData = ctx.createImageData(4096, 1);
@@ -122,9 +130,52 @@ const updateInfo = ({bufferSize, bufferCapacity, frequency, volume}) => {
     }
 }
 
+const updateFrequency = (callback) => {
+    if (callback) {
+        config.frequency = callback(config.frequency);
+    }
+
+    if (isOpen) {
+        socket.send(JSON.stringify({
+            command: "change_frequency",
+            frequency: config.frequency
+        }));
+    }
+
+    updateInfo({
+        frequency: config.frequency,
+        bufferCapacity: 0,
+        bufferSize: 0,
+        volume: config.volume
+    });
+};
+
+const updateLocation = () => {
+    const url = new URL(location);
+    const freq = url.searchParams.get('frequency');
+    if (freq) {
+        updateFrequency(_ => parseInt(freq))
+    }
+};
+
+window.addEventListener('load', (e) => {
+    updateLocation();
+});
+
+window.addEventListener('locationchange', (e) => {
+    updateLocation();
+});
+
+window.addEventListener('popstate', (e) => {
+    updateLocation();
+});
+
 document.getElementById('frequency-info').addEventListener('wheel', (e) => {
-    config.frequency += Math.sign(e.deltaY) * 100000;
-    socket.send(JSON.stringify({command: "change_frequency", frequency: config.frequency}));
+    updateFrequency(curr => curr + Math.sign(e.deltaY) * 100_000);
+
+    const url = new URL(location);
+    url.searchParams.set('frequency', config.frequency);
+    history.pushState({}, '', url);
 });
 
 document.getElementById('volume-control').addEventListener('change', e => {
@@ -133,5 +184,3 @@ document.getElementById('volume-control').addEventListener('change', e => {
     config.volume = e.target.value / 100;
     audioGainNode.gain.setValueAtTime(config.volume, 0);
 });
-
-updateInfo({frequency: config.frequency, bufferCapacity: 0, bufferSize: 0, volume: config.volume});
