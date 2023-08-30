@@ -86,7 +86,7 @@ async fn main() {
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "tower_http=debug,websdr=debug".into()),
+                .unwrap_or_else(|_| "tower_http=info,websdr=debug".into()),
         ))
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -300,7 +300,7 @@ fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &A
     sdr.set_center_freq(95_000_000)?;
     sdr.set_sample_rate(1_200_000)?;
 
-    info!("Tuned to {} Hz.\n", sdr.get_center_freq());
+    info!("Tuned to {} Hz.", sdr.get_center_freq());
     // info!("Buffer size: {}ms", 1000.0 * 0.5 * DEFAULT_BUF_LENGTH as f32 / radio_config.capture_rate as f32);
     info!("Sampling at {} S/s", sdr.get_sample_rate());
 
