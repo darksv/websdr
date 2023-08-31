@@ -32,9 +32,8 @@ use tower_http::{
 use tracing::{debug, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::iter::IterExt;
-
 mod iter;
+mod demod;
 
 struct ControllerState {
     cmd_tx: Sender<SdrCommand>,
@@ -313,7 +312,7 @@ fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &A
 
     let window = make_hamming_window(FFT_LEN, 1.0);
 
-    let mut audio_samples = Vec::new();
+    let mut demod = demod::Demodulator::new();
 
     loop {
         if terminated.load(Ordering::Relaxed) {
@@ -327,28 +326,14 @@ fn sdr_worker(state: &ControllerState, rx: &Receiver<SdrCommand>, terminated: &A
             let frame: Vec<_> = buffer[..FFT_LEN].iter().copied().map(|it| ((it.norm() as f32) * 4.0) as u8).collect();
             state.send_to_all(Data::Fft(bytes::Bytes::from(frame)));
             let samples = incoming_samples.drain(..FFT_LEN);
-
-            {
-                let Fs = 1_200_000;
-                let Fbw = 200_000;
-                let Fa = 22050;
-
-                samples
-                    .into_iter()
-                    .step_by(Fs / Fbw)
-                    .array_windows()
-                    .map(|[s0, s1]| (s1 * s0.conj()).arg())
-                    .step_by(Fbw / Fa)
-                    .collect_into(&mut audio_samples);
-            };
+            demod.push_samples(samples);
         }
 
         let fs = 22050;
         let n = fs / 10 / 5;
 
-        while audio_samples.len() >= n {
-            let audio = audio_samples
-                .drain(..n)
+        while let Some(samples) = demod.pull_audio(n) {
+            let audio = samples
                 .map(|it| ((it * i16::MAX as f32) as i16).to_le_bytes())
                 .flatten()
                 .collect();
